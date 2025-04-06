@@ -3,26 +3,30 @@
 ## TCP stream without arc mutex, actor pattern
 Avoid putting TCP streams behind the arc mutex since it may introiduce performance issues. Use this method instead:
 ```rust
+use tokio::io::AsyncWriteExt;
+
 #[tokio::main]
 async fn main() {
-    let tx,rx = tokio::sync::mpsc::Channel(8); // 8 is concurrency
-    let tcp = tokio::net::TcpStream::connect("127.0.0.1:8080").await.unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8); // 8 is a buffer
+    let mut tcp = tokio::net::TcpStream::connect("127.0.0.1:8080")
+        .await
+        .unwrap();
     tokio::spawn(async move {
-        while let Some(bytes) = rx.next().await {
-            tcp.write_all(bytes).await.unwrap();
-            // or read from the tcp stream and send to a channel
+        while let Some(bytes) = rx.recv().await {
+            tcp.write_all(&bytes).await.unwrap();
         }
     });
 
-    tx.send(vec![0, 1, 2, 3, 4]);
+    let data = vec![0, 1, 2, 3, 4];
+    tx.send(data).await.unwrap();
 
     // or also we can use multiple task that each can send data individually
-
     {
         let tx = tx.clone();
         tokio::spawn(async move {
             loop {
-                tx.send(vec![0, 1, 2, 3, 4]).await; // we need to allocate a vector for each sequence of bytes you want to send
+                let data = vec![0, 1, 2, 3, 4];
+                tx.send(data).await.unwrap();
             }
         });
     }
@@ -31,7 +35,8 @@ async fn main() {
         let tx = tx.clone();
         tokio::spawn(async move {
             loop {
-                tx.send(vec![0, 1, 2, 3, 4]).await; // advantage is that this structure doesn't need to wait, and no need for mutex around the stream
+                let data = vec![0, 1, 2, 3, 4];
+                tx.send(data).await.unwrap();
             }
         });
     }
@@ -39,30 +44,30 @@ async fn main() {
 ```
 
 ## TCP stream without arc mutex, actor pattern with responses
-Avoid putting TCP streams behind the arc mutex since it may introiduce performance issues. Use this method instead:
+Avoid putting TCP streams behind the arc mutex since it may introduce performance issues. Use this method instead:
 ```rust
+use tokio::io::AsyncWriteExt;
+
 #[tokio::main]
 async fn main() {
-    let tx,rx = tokio::sync::mpsc::Channel(8); // 8 is concurrency
-    let tcp = tokio::net::TcpStream::connect("127.0.0.1:8080").await.unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(Vec<u8>, tokio::sync::oneshot::Sender<Result<usize, std::io::Error>>)>(8);
+    let mut tcp = tokio::net::TcpStream::connect("127.0.0.1:8080").await.unwrap();
     tokio::spawn(async move {
-        while let Some((bytes, ack)) = rx.next().await {
-            ack.send(tcp.write_all(bytes).await);
-            // or read from the tcp stream and send to a channel
+        while let Some((bytes, ack)) = rx.recv().await {
+            let result = tcp.write_all(&bytes).await;
+            let _ = ack.send(result.map(|_| bytes.len())); // or read from the tcp stream and send to a channel
         }
     });
 
-    tx.send(vec![0, 1, 2, 3, 4]);
-
     // to insure that the response will be sent to the one who sent a request
-
     {
         let tx = tx.clone();
         tokio::spawn(async move {
             loop {
                 let (syn, ack) = tokio::sync::oneshot::channel();
-                tx.send((vec![0, 1, 2, 3, 4], syn)).await;
-                let num_written = ack.await.unwrap();
+                tx.send((vec![0, 1, 2, 3, 4], syn)).await.unwrap();
+                let num_written = ack.await.unwrap().unwrap();
+                println!("Wrote {} bytes", num_written);
             }
         });
     }
@@ -72,8 +77,9 @@ async fn main() {
         tokio::spawn(async move {
             loop {
                 let (syn, ack) = tokio::sync::oneshot::channel();
-                tx.send((vec![0, 1, 2, 3, 4], syn)).await;
-                let num_written = ack.await.unwrap();
+                tx.send((vec![0, 1, 2, 3, 4], syn)).await.unwrap();
+                let num_written = ack.await.unwrap().unwrap();
+                println!("Wrote {} bytes", num_written);
             }
         });
     }

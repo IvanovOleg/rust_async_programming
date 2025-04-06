@@ -14,7 +14,7 @@ async fn hello(name: &str) -> String {
 
 #[tokio::main]
 async fn main() {
-    let join_handle: JoinHandle<String> = tokio.spawn(hello("Oleg"));
+    let join_handle: JoinHandle<String> = tokio::spawn(hello("Oleg"));
     let value = join_handle.await.unwrap();
     println!("{}", value);
 }
